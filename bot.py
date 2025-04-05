@@ -37,14 +37,21 @@ CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')  # Can be a channel username like 
 bot = telebot.TeleBot(TOKEN)
 
 def setup_webdriver():
-    """Configure and return a headless Chrome WebDriver instance"""
+    """Configure and return a remote Chrome WebDriver instance"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=5400,2950")
     chrome_options.add_argument("--force-device-scale-factor=2")
-    return webdriver.Chrome(options=chrome_options)
+    
+    selenium_host = os.getenv('SELENIUM_HOST', 'selenium')
+    selenium_port = os.getenv('SELENIUM_PORT', '4444')
+    
+    return webdriver.Remote(
+        command_executor=f'http://{selenium_host}:{selenium_port}/wd/hub',
+        options=chrome_options
+    )
 
 def capture_coinglass_heatmap(time_period="1 month"):
     """

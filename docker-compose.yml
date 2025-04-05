@@ -1,11 +1,20 @@
 version: '3'
 
 services:
-  liquidation-bot:
+  selenium:
+    image: selenium/standalone-chrome:latest
+    shm_size: 2gb
+    ports:
+      - "4444:4444"
+    restart: always
+
+  bot:
     build: .
-    container_name: liquidation-map-bot
-    restart: unless-stopped
+    depends_on:
+      - selenium
+    environment:
+      - SELENIUM_HOST=selenium
+      - SELENIUM_PORT=4444
+    restart: always
     volumes:
       - ./logs:/app/logs
-    environment:
-      - TZ=ETC
