@@ -1,0 +1,7 @@
+python-telegram-bot
+selenium
+pillow
+schedule
+python-dotenv
+requests
+telebot

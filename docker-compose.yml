@@ -1,0 +1,11 @@
+version: '3'
+
+services:
+  liquidation-bot:
+    build: .
+    container_name: liquidation-map-bot
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      - TZ=ETC
