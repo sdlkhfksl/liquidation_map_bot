@@ -36,8 +36,8 @@ CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')  # Can be a channel username like 
 # Initialize the bot
 bot = telebot.TeleBot(TOKEN)
 
-def setup_webdriver():
-    """Configure and return a remote Chrome WebDriver instance"""
+def setup_webdriver(max_retries=5, retry_delay=2):
+    """Configure and return a remote Chrome WebDriver instance with retries"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -45,13 +45,26 @@ def setup_webdriver():
     chrome_options.add_argument("--window-size=5400,2950")
     chrome_options.add_argument("--force-device-scale-factor=2")
     
-    selenium_host = os.getenv('SELENIUM_HOST', 'selenium')
+    selenium_host = os.getenv('SELENIUM_HOST', 'localhost')
     selenium_port = os.getenv('SELENIUM_PORT', '4444')
     
-    return webdriver.Remote(
-        command_executor=f'http://{selenium_host}:{selenium_port}/wd/hub',
-        options=chrome_options
-    )
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Connecting to Selenium at http://{selenium_host}:{selenium_port}/wd/hub (attempt {attempt+1}/{max_retries})")
+            driver = webdriver.Remote(
+                command_executor=f'http://{selenium_host}:{selenium_port}/wd/hub',
+                options=chrome_options
+            )
+            logger.info("Successfully connected to Selenium")
+            return driver
+        except Exception as e:
+            logger.warning(f"Failed to connect to Selenium: {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                logger.error("Max retries exceeded. Could not connect to Selenium.")
+                raise
 
 def capture_coinglass_heatmap(time_period="1 month"):
     """
