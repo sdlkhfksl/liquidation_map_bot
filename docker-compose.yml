@@ -15,6 +15,7 @@ services:
     environment:
       - SELENIUM_HOST=selenium
       - SELENIUM_PORT=4444
+      - TZ=EDT
     restart: always
     volumes:
       - ./logs:/app/logs
