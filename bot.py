@@ -1,5 +1,5 @@
 # --- START OF bot.py ---
-
+# 内容与上一版完全相同，这里为完整性再次列出
 import os
 import logging
 import time
@@ -12,28 +12,22 @@ from flask import Flask, jsonify
 import requests
 import base64
 from io import BytesIO
-
-# --- Selenium Imports ---
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# --- Configuration ---
-# 创建 logs 文件夹，如果它不存在的话
 os.makedirs("logs", exist_ok=True)
 load_dotenv()
 
-# --- Environment Variables & Constants ---
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
-SCHEDULE_INTERVAL_HOURS = int(os.getenv('SCHEDULE_INTERVAL_HOURS', '24')) # 默认24小时
+SCHEDULE_INTERVAL_HOURS = int(os.getenv('SCHEDULE_INTERVAL_HOURS', '24'))
 DEFAULT_TIMEFRAME = os.getenv('DEFAULT_TIMEFRAME', '1 month')
 VALID_TIMEFRAMES = ["24 hour", "12 hour", "4 hour", "1 hour", "1 week", "1 month", "3 month"]
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 
-# --- Initialization ---
 logging.basicConfig(
     level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -47,9 +41,7 @@ if not all([TOKEN, CHANNEL_ID]):
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- Core Selenium Logic ---
 def setup_webdriver():
-    """配置并返回一个本地的 Chrome WebDriver 实例"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -67,7 +59,6 @@ def setup_webdriver():
         raise
 
 def capture_coinglass_heatmap(time_period: str) -> bytes | None:
-    """使用 Selenium 捕获 Coinglass 热图并返回图片的二进制数据"""
     driver = None
     try:
         logger.info(f"Starting capture for timeframe: {time_period}")
@@ -117,7 +108,6 @@ def capture_coinglass_heatmap(time_period: str) -> bytes | None:
             logger.info("WebDriver has been closed.")
 
 def get_bitcoin_price() -> str | None:
-    """从 CoinGecko API 获取比特币价格"""
     try:
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
         response = requests.get(url, timeout=10)
@@ -129,7 +119,6 @@ def get_bitcoin_price() -> str | None:
         logger.error(f"Error fetching Bitcoin price: {e}")
         return None
 
-# --- Bot & Task Functions ---
 def process_and_send_heatmap(chat_id: str | int, time_period: str):
     image_bytes = capture_coinglass_heatmap(time_period)
     
@@ -169,15 +158,9 @@ def handle_manual_heatmap(message):
     bot.reply_to(message, f"Capturing the latest {time_period} Bitcoin liquidation heatmap, please wait...")
     threading.Thread(target=process_and_send_heatmap, args=(message.chat.id, time_period)).start()
 
-# --- Main Application Logic & Flask Server ---
 def run_bot_scheduler():
     logger.info(f"Starting Bot Scheduler. Interval: {SCHEDULE_INTERVAL_HOURS} hours.")
     schedule.every(SCHEDULE_INTERVAL_HOURS).hours.do(scheduled_heatmap_task)
-    
-    # 为了避免启动时发送两次，这里的启动任务可以视情况决定是否需要
-    # logger.info("Performing initial heatmap run on startup...")
-    # threading.Thread(target=scheduled_heatmap_task).start()
-
     logger.info("Starting Telegram bot polling...")
     threading.Thread(target=bot.polling, kwargs={"none_stop": True, "timeout": 30}, daemon=True).start()
     
@@ -195,7 +178,6 @@ def start_background_tasks():
         bot_thread = threading.Thread(target=run_bot_scheduler, daemon=True)
         bot_thread.start()
 
-# Gunicorn hook, a reliable way to start background tasks in a web server environment.
 def post_fork(server, worker):
     start_background_tasks()
 
@@ -211,10 +193,8 @@ def health():
         return jsonify(status='error', reason='Background thread is not running'), 503
 
 if __name__ == '__main__':
-    # 这个部分只在本地直接运行 python bot.py 时使用，Gunicorn部署时不会执行
     logger.info("Starting application for local development...")
     start_background_tasks()
     port = int(os.getenv('PORT', '8080'))
     app.run(host='0.0.0.0', port=port)
-
 # --- END OF bot.py ---
