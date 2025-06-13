@@ -1,21 +1,25 @@
-version: '3'
+# docker-compose.yml
+
+version: '3.8'
 
 services:
-  selenium:
-    image: selenium/standalone-chrome:latest
-    shm_size: 2gb
-    ports:
-      - "4444:4444"
-    restart: always
-
-  bot:
+  heatmap-bot:
+    # Build the Docker image using the Dockerfile in the current directory
     build: .
-    depends_on:
-      - selenium
-    environment:
-      - SELENIUM_HOST=selenium
-      - SELENIUM_PORT=4444
-      - TZ=EDT
-    restart: always
+    
+    # Load environment variables from the .env file
+    # This is how you pass secrets to the container locally
+    env_file:
+      - .env
+      
+    # Map port 8080 on your local machine to port 8000 inside the container
+    # You can then access the health check at http://localhost:8080/health
+    ports:
+      - "8080:8000"
+      
+    # Mount local directories into the container
+    # This allows for live code reloading without rebuilding the image.
+    # Any change in bot.py will be reflected after restarting the container.
     volumes:
-      - ./logs:/app/logs
+      - .:/app
+      - /app/logs # Persist logs outside the container's ephemeral filesystem
