@@ -1,8 +1,7 @@
-# bot.py (最终版 - API直连 + Matplotlib绘图)
+# --- START OF FILE bot.py ---
 
 import os
 import logging
-import requests
 import time
 from datetime import datetime
 import schedule
@@ -10,16 +9,16 @@ import telebot
 from dotenv import load_dotenv
 import threading
 from flask import Flask, jsonify
-import json
+import requests
+import base64
 from io import BytesIO
 
-# 绘图库
-import numpy as np
-import matplotlib
-matplotlib.use('Agg') # 使用非交互式后端，在服务器上运行的必要设置
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.ticker import FuncFormatter
+# --- Selenium Imports ---
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # --- Configuration ---
 os.makedirs("logs", exist_ok=True)
@@ -28,8 +27,8 @@ load_dotenv()
 # --- Environment Variables & Constants ---
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
-SCHEDULE_INTERVAL_HOURS = int(os.getenv('SCHEDULE_INTERVAL_HOURS', '4'))
-DEFAULT_TIMEFRAME = os.getenv('DEFAULT_TIMEFRAME', '24 hour')
+SCHEDULE_INTERVAL_HOURS = int(os.getenv('SCHEDULE_INTERVAL_HOURS', '24')) # Default to daily
+DEFAULT_TIMEFRAME = os.getenv('DEFAULT_TIMEFRAME', '1 month')
 VALID_TIMEFRAMES = ["24 hour", "12 hour", "4 hour", "1 hour", "1 week", "1 month", "3 month"]
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 
@@ -47,156 +46,131 @@ if not all([TOKEN, CHANNEL_ID]):
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- Core Logic ---
+# --- Core Selenium Logic (Integrated) ---
 
-def get_heatmap_raw_data(time_period: str = "24 hour") -> dict | None:
-    """从 Coinglass 的真实 API 获取热力图的原始数据"""
-    time_type_map = {
-        "24 hour": "0", "1 month": "1", "3 month": "2",
-        "12 hour": "3", "4 hour": "4", "1 hour": "5", "1 week": "6"
-    }
-    api_url = "https://api.coinglass.com/api/pro/v1/futures/getLiquidationMap"
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    payload = {
-        "symbol": "BTC",
-        "timeType": time_type_map.get(time_period, "0"),
-        "type": 0
-    }
+def setup_webdriver():
+    """Configure and return a LOCAL Chrome WebDriver instance."""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=2400,1600") # High resolution for better quality
+    chrome_options.add_argument("--force-device-scale-factor=1.5") # Scale factor
+    
+    logger.info("Setting up local Selenium WebDriver...")
     try:
-        logger.info(f"Fetching heatmap data from Coinglass API for timeframe: {time_period}")
-        response = requests.post(api_url, headers=headers, data=json.dumps(payload), timeout=20)
-        response.raise_for_status()
-        data = response.json()
-        if data.get("success") and "data" in data:
-            logger.info("Successfully fetched raw data.")
-            return data["data"]
+        driver = webdriver.Chrome(options=chrome_options)
+        logger.info("Local WebDriver started successfully.")
+        return driver
+    except Exception as e:
+        logger.error(f"Failed to start local WebDriver: {e}", exc_info=True)
+        raise
+
+def capture_coinglass_heatmap(time_period: str) -> bytes | None:
+    """Uses a local Selenium instance to capture the Coinglass heatmap and returns image bytes."""
+    driver = None
+    try:
+        logger.info(f"Starting capture for timeframe: {time_period}")
+        driver = setup_webdriver()
+        
+        driver.get("https://www.coinglass.com/pro/futures/LiquidationHeatMap")
+        wait = WebDriverWait(driver, 30)
+
+        # Wait for the main content area to load to ensure page is ready
+        wait.until(EC.presence_of_element_located((By.ID, "root")))
+        time.sleep(2) # Allow initial JS to execute
+
+        # Find and click the time period dropdown button
+        dropdown_selector = "div.cg-style-161sc7i > div.MuiSelect-root"
+        time_dropdown = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, dropdown_selector)))
+        
+        # Click dropdown only if the period needs to be changed
+        current_period = time_dropdown.text.strip()
+        logger.info(f"Current selected period on page: '{current_period}', Desired: '{time_period}'")
+        if current_period != time_period:
+            time_dropdown.click()
+            logger.info("Clicked time period dropdown.")
+            
+            # Find and click the desired option from the list
+            option_xpath = f"//li[@role='option' and text()='{time_period}']"
+            option = wait.until(EC.element_to_be_clickable((By.XPATH, option_xpath)))
+            option.click()
+            logger.info(f"Selected '{time_period}' from dropdown.")
+            # Wait for the chart to update after selection
+            time.sleep(4)
         else:
-            logger.error(f"API returned success=false or no data. Response: {data}")
-            return None
-    except requests.RequestException as e:
-        logger.error(f"Error fetching data from Coinglass API: {e}")
-        return None
+            logger.info("Correct time period already selected.")
+            time.sleep(2) # Still wait for chart to be stable
 
-def plot_heatmap_image(raw_data: dict, time_period: str) -> bytes | None:
-    """使用 Matplotlib 将原始数据绘制成热力图图片"""
-    try:
-        logger.info("Starting to plot heatmap image.")
-        # 提取数据
-        price_list = np.array(raw_data['priceList'])
-        date_list = raw_data['dateList']
-        long_list = np.array(raw_data['longRateList'])
-        short_list = np.array(raw_data['shortRateList'])
+        # Locate the chart element
+        chart_element_selector = "div.echarts-for-react"
+        heatmap_container = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, chart_element_selector)))
+        logger.info("Chart container found. Preparing to capture.")
         
-        # Coinglass API 返回的是一维数组，需要重塑成二维矩阵
-        # 矩阵的形状是 (价格点数, 时间点数)
-        num_prices = len(price_list)
-        num_times = len(date_list)
-        
-        # 将一维的清算率数据重塑为二维
-        long_matrix = long_list.reshape(num_times, num_prices).T
-        short_matrix = short_list.reshape(num_times, num_prices).T
-        
-        # 合并多头和空头数据用于绘图，这里我们简单相加
-        heatmap_matrix = long_matrix + short_matrix
-        
-        # --- 开始绘图 ---
-        # 创建一个模仿 Coinglass 的颜色映射
-        colors = ['#000000', '#000080', '#0000FF', '#FFFF00', '#FFFFFF']
-        cmap = LinearSegmentedColormap.from_list('coinglass_cmap', colors)
-
-        # 创建图表和坐标轴
-        fig, ax = plt.subplots(figsize=(15, 8), dpi=100)
-        fig.set_facecolor('#131722') # 设置背景色
-        ax.set_facecolor('#131722')
-
-        # 绘制热力图
-        im = ax.imshow(heatmap_matrix, aspect='auto', cmap=cmap, 
-                       interpolation='nearest', origin='lower',
-                       extent=[0, num_times, 0, num_prices])
-
-        # --- 格式化坐标轴 ---
-        # Y轴 (价格)
-        ax.set_ylabel('Price (USD)', color='white', fontsize=12)
-        price_ticks = np.linspace(0, num_prices - 1, 8, dtype=int)
-        ax.set_yticks(price_ticks)
-        ax.set_yticklabels([f'{int(price_list[i])}' for i in price_ticks], color='white')
-
-        # X轴 (时间)
-        ax.set_xlabel('Date', color='white', fontsize=12)
-        time_ticks = np.linspace(0, num_times - 1, 6, dtype=int)
-        ax.set_xticks(time_ticks)
-        ax.set_xticklabels([datetime.fromtimestamp(date_list[i]/1000).strftime('%m-%d %H:%M') for i in time_ticks], color='white', rotation=20)
-
-        # 设置标题
-        ax.set_title(f'BTC Liquidation Heatmap ({time_period})', color='white', fontsize=16, pad=20)
-
-        # 调整边框颜色
-        for spine in ax.spines.values():
-            spine.set_edgecolor('gray')
-
-        # 添加颜色条 (图例)
-        cbar = fig.colorbar(im, ax=ax, pad=0.02)
-        cbar.set_label('Liquidation Amount', color='white')
-        plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
-
-        # --- 保存到内存 ---
-        buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', facecolor=fig.get_facecolor())
-        buf.seek(0)
-        plt.close(fig) # 关闭图表，释放内存
-        
-        logger.info("Successfully plotted heatmap image.")
-        return buf.getvalue()
+        # Use Chrome DevTools Protocol to take a high-quality screenshot of the element
+        result = driver.execute_cdp_cmd(
+            'Page.captureScreenshot',
+            {
+                'clip': heatmap_container.rect,
+                'fromSurface': True
+            }
+        )
+        png_data = base64.b64decode(result['data'])
+        logger.info("Screenshot captured successfully via CDP.")
+        return png_data
 
     except Exception as e:
-        logger.error(f"Error plotting image: {e}", exc_info=True)
+        logger.error(f"An error occurred during heatmap capture: {e}", exc_info=True)
+        if driver:
+            # Save a debug screenshot if something went wrong
+            driver.save_screenshot("debug_screenshot.png")
+            logger.error("Saved full-page debug_screenshot.png")
+        return None
+    finally:
+        if driver:
+            driver.quit()
+            logger.info("WebDriver has been closed.")
+
+def get_bitcoin_price() -> str | None:
+    """Fetch the current Bitcoin price from CoinGecko API."""
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        price = data.get('bitcoin', {}).get('usd')
+        return f"${price:,.2f}" if price else None
+    except requests.RequestException as e:
+        logger.error(f"Error fetching Bitcoin price: {e}")
         return None
 
-def process_and_send_heatmap(chat_id: str | int, time_period: str):
-    """获取数据、绘图并发送的完整流程"""
-    raw_data = get_heatmap_raw_data(time_period)
-    if not raw_data:
-        bot.send_message(chat_id, f'❌ Failed to fetch data for {time_period} heatmap.')
-        return
+# --- Bot & Task Functions ---
 
-    image_data = plot_heatmap_image(raw_data, time_period)
-    if not image_data:
-        bot.send_message(chat_id, f'❌ Failed to generate image for {time_period} heatmap.')
+def process_and_send_heatmap(chat_id: str | int, time_period: str):
+    """The complete process: capture screenshot and send to Telegram."""
+    image_bytes = capture_coinglass_heatmap(time_period)
+    
+    if not image_bytes:
+        bot.send_message(chat_id, f'❌ Failed to capture screenshot for {time_period} heatmap.')
         return
     
     price = get_bitcoin_price()
     time_period_title = time_period.replace(" hour", "-Hour").replace(" week", "-Week").replace(" month", "-Month")
-    caption = f"📊 {time_period_title} Bitcoin Liquidation Heatmap (Self-Generated)\n"
+    caption = f"📊 {time_period_title} Bitcoin Liquidation Heatmap\n"
     caption += f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC"
     if price:
         caption += f"\n💰 BTC Price: {price}"
     
-    bot.send_photo(chat_id, image_data, caption=caption)
-    logger.info(f"Self-generated heatmap sent successfully to chat_id: {chat_id}")
+    bot.send_photo(chat_id, BytesIO(image_bytes), caption=caption)
+    logger.info(f"Heatmap screenshot sent successfully to chat_id: {chat_id}")
 
-def get_bitcoin_price() -> str | None:
-    # (此函数保持不变)
-    try:
-        resp = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        price = data.get('bitcoin', {}).get('usd')
-        return f"${price:,.2f}" if price else None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching BTC price: {e}")
-        return None
-
-# --- Scheduled & Bot Handler Functions (保持不变) ---
 def scheduled_heatmap_task():
     logger.info(f"Running scheduled task for {DEFAULT_TIMEFRAME} heatmap.")
     process_and_send_heatmap(CHANNEL_ID, DEFAULT_TIMEFRAME)
 
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    bot.reply_to(message, f"Bot started! I will send the {DEFAULT_TIMEFRAME} Bitcoin liquidation heatmap every {SCHEDULE_INTERVAL_HOURS} hours.")
+    bot.reply_to(message, f"Bot started! I will send the {DEFAULT_TIMEFRAME} Bitcoin liquidation heatmap every {SCHEDULE_INTERVAL_HOURS} hours. Use /heatmap to get one now.")
 
 @bot.message_handler(commands=['heatmap'])
 def handle_manual_heatmap(message):
@@ -207,19 +181,25 @@ def handle_manual_heatmap(message):
         if requested_period in VALID_TIMEFRAMES:
             time_period = requested_period
         else:
-            bot.reply_to(message, f"Invalid time frame. Please use one of: {', '.join(VALID_TIMEFRAMES)}")
+            bot.reply_to(message, f"Invalid time frame. Use one of: {', '.join(VALID_TIMEFRAMES)}")
             return
-    bot.reply_to(message, f"Fetching and generating the latest {time_period} Bitcoin liquidation heatmap...")
+    bot.reply_to(message, f"Capturing the latest {time_period} Bitcoin liquidation heatmap, please wait...")
+    # Run in a thread to avoid blocking the bot
     threading.Thread(target=process_and_send_heatmap, args=(message.chat.id, time_period)).start()
 
-# --- Main Application Logic & Flask Server (保持不变) ---
+# --- Main Application Logic & Flask Server for Deployment ---
+
 def run_bot_scheduler():
     logger.info(f"Starting Bot Scheduler. Interval: {SCHEDULE_INTERVAL_HOURS} hours.")
+    # Use 'day.at("08:00")' if you want a specific time, or 'hours' for interval
     schedule.every(SCHEDULE_INTERVAL_HOURS).hours.do(scheduled_heatmap_task)
+
     logger.info("Performing initial heatmap run on startup...")
     threading.Thread(target=scheduled_heatmap_task).start()
+
     logger.info("Starting Telegram bot polling...")
     threading.Thread(target=bot.polling, kwargs={"none_stop": True, "timeout": 30}, daemon=True).start()
+    
     while True:
         schedule.run_pending()
         time.sleep(60)
@@ -234,6 +214,10 @@ def start_background_tasks():
         bot_thread = threading.Thread(target=run_bot_scheduler, daemon=True)
         bot_thread.start()
 
+# Gunicorn hook for post-fork worker initialization
+def post_fork(server, worker):
+    start_background_tasks()
+
 @app.route('/')
 def root(): return 'Bot is running.'
 
@@ -246,7 +230,11 @@ def health():
         return jsonify(status='error', reason='Background thread is not running'), 503
 
 if __name__ == '__main__':
+    # This block is for local development only. 
+    # For deployment, Gunicorn will be the entry point.
     logger.info("Starting application for local development...")
     start_background_tasks()
     port = int(os.getenv('PORT', '8080'))
     app.run(host='0.0.0.0', port=port)
+
+# --- END OF FILE bot.py ---
