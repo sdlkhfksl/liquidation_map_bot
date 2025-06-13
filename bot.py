@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Get token from environment variable
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')  # Can be a channel username like '@yourchannel' or a chat_id
+CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')  # Channel username like '@yourchannel' or chat_id
 
 # Initialize the bot
 bot = telebot.TeleBot(TOKEN)
@@ -73,17 +73,17 @@ def capture_coinglass_heatmap(time_period="24 hour"):
     Args:
         time_period (str): Time period to select (e.g., "24 hour", "1 month", "3 month")
     """
+    driver = None
     try:
         logger.info(f"Starting capture of Coinglass heatmap with {time_period} timeframe")
         driver = setup_webdriver()
         
         # Navigate to Coinglass liquidation page
         driver.get("https://www.coinglass.com/pro/futures/LiquidationHeatMap")
-                # Wait for the page to load
         wait = WebDriverWait(driver, 20)
-        # Optimize page for screenshot
+
+        # Inject CSS/JS to optimize screenshot
         driver.execute_script("""
-            // Disable animations
             var style = document.createElement('style');
             style.innerHTML = `
                 * {
@@ -100,233 +100,158 @@ def capture_coinglass_heatmap(time_period="24 hour"):
                 }
             `;
             document.head.appendChild(style);
-            
-            // Set high DPI
             window.devicePixelRatio = 2;
         """)
         
-        try:
-            # Find and click the time period dropdown button
-            time_dropdown = wait.until(EC.element_to_be_clickable((
-                By.CSS_SELECTOR, "div.MuiSelect-root button.MuiSelect-button"
-            )))
-            logger.info("Found time period dropdown")
-            
-            # Check if the dropdown already shows the desired time period
-            if time_dropdown.text.strip() != time_period:
-                # Click to open the dropdown
-                time_dropdown.click()
-                logger.info("Clicked dropdown to open it")
-                
-                # Wait for dropdown options to appear
-                time.sleep(2)  # Increased delay to ensure dropdown is fully opened
-                
-                # Try multiple selector approaches
-                logger.info("Trying with JavaScript")
-                driver.execute_script(f"""
-                    var options = document.querySelectorAll('li[role="option"]');
-                    for(var i = 0; i < options.length; i++) {{
-                        if(options[i].textContent.includes('{time_period}')) {{
-                            options[i].click();
-                            break;
-                        }}
+        # Select the desired time period
+        time_dropdown = wait.until(EC.element_to_be_clickable((
+            By.CSS_SELECTOR, "div.MuiSelect-root button.MuiSelect-button"
+        )))
+        if time_dropdown.text.strip() != time_period:
+            time_dropdown.click()
+            time.sleep(2)
+            driver.execute_script(f"""
+                var options = document.querySelectorAll('li[role="option"]');
+                for (var i = 0; i < options.length; i++) {{
+                    if (options[i].textContent.includes('{time_period}')) {{
+                        options[i].click();
+                        break;
                     }}
-                """)
-                # Wait for the selection to take effect
-                time.sleep(3)
-            else:
-                logger.info(f"Dropdown already shows {time_period}, no need to change")
-            
-            # Now find and capture the chart
-            logger.info("Looking for chart container")
-            # Try different selectors for the chart
-            try:
-                heatmap_container = wait.until(EC.presence_of_element_located((
-                    By.CSS_SELECTOR, "div.echarts-for-react"
-                )))
-            except Exception:
-                logger.info("First chart selector failed, trying alternative")
-                heatmap_container = wait.until(EC.presence_of_element_located((
-                    By.XPATH, "//div[contains(@class, 'echarts-for-react')]"
-                )))
-            
-            logger.info("Found chart container, waiting for render")
-            # Give extra time for the chart to fully render
+                }}
+            """)
             time.sleep(3)
-            
-            rect = driver.execute_script("""
-                var rect = arguments[0].getBoundingClientRect();
-                return {
-                    x: rect.left,
-                    y: rect.top,
-                    width: rect.width,
-                    height: rect.height,
-                    scale: window.devicePixelRatio || 1
-                };
-            """, heatmap_container)
-            
-            # Set clip area for screenshot
-            clip = {
-                'x': rect['x'],
-                'y': rect['y'],
-                'width': rect['width'],
-                'height': rect['height'],
-                'scale': 2  # Force 2x scale
-            }
-            
-            # Capture screenshot with CDP
-            result = driver.execute_cdp_cmd('Page.captureScreenshot', {
-                'clip': clip,
-                'captureBeyondViewport': True,
-                'fromSurface': True
-            })
-            
-            # Convert base64 to image
-            png_data = base64.b64decode(result['data'])
-            
-            # Convert to PIL Image for processing if needed
-            image = Image.open(BytesIO(png_data))
-            
-            # Save temporarily
-            temp_file = f"btc_liquidation_heatmap_{datetime.now().strftime('%Y%m%d')}_{time_period.replace(' ', '_')}.png"
-            image.save(temp_file, format='PNG', optimize=True, quality=100)
-            
-            logger.info(f"Heatmap captured and saved as {temp_file}")
-            return temp_file
-            
-        except Exception as inner_e:
-            logger.error(f"Error during chart capture process: {inner_e}")
-            
-            # Fallback: take screenshot of entire page
-            logger.info("Attempting fallback: capturing entire page")
-            driver.save_screenshot(f"fallback_screenshot_{datetime.now().strftime('%Y%m%d')}.png")
-            
-            # Try to continue with whatever is on screen
+        else:
+            logger.info(f"Dropdown already set to {time_period}")
+
+        # Locate the chart container
+        try:
+            heatmap_container = wait.until(EC.presence_of_element_located((
+                By.CSS_SELECTOR, "div.echarts-for-react"
+            )))
+        except Exception:
+            heatmap_container = wait.until(EC.presence_of_element_located((
+                By.XPATH, "//div[contains(@class, 'echarts-for-react')]"
+            )))
+        time.sleep(3)
+
+        # Compute screenshot bounds
+        rect = driver.execute_script("""
+            var r = arguments[0].getBoundingClientRect();
+            return {left: r.left, top: r.top, width: r.width, height: r.height, scale: window.devicePixelRatio || 1};
+        """, heatmap_container)
+        clip = {
+            'x': rect['left'],
+            'y': rect['top'],
+            'width': rect['width'],
+            'height': rect['height'],
+            'scale': 2
+        }
+
+        # Capture via Chrome DevTools Protocol
+        result = driver.execute_cdp_cmd('Page.captureScreenshot', {
+            'clip': clip,
+            'captureBeyondViewport': True,
+            'fromSurface': True
+        })
+        png = base64.b64decode(result['data'])
+        image = Image.open(BytesIO(png))
+
+        # Save file
+        filename = f"btc_heatmap_24h_{datetime.now().strftime('%Y%m%d_%H%M')}.png"
+        image.save(filename, format='PNG', optimize=True, quality=100)
+        logger.info(f"Heatmap saved as {filename}")
+        return filename
+
+    except Exception as err:
+        logger.error(f"Error during heatmap capture: {err}")
+        # Fallback: full-page screenshot
+        if driver:
+            fallback_name = f"fallback_{datetime.now().strftime('%Y%m%d_%H%M')}.png"
             try:
-                # Find any chart element that might be present
-                elements = driver.find_elements(By.CSS_SELECTOR, "div[class*='chart'], canvas, div[class*='echarts']")
-                if elements:
-                    logger.info(f"Found {len(elements)} potential chart elements, capturing first one")
-                    png_data = elements[0].screenshot_as_png
-                    image = Image.open(BytesIO(png_data))
-                    temp_file = f"fallback_chart_{datetime.now().strftime('%Y%m%d')}.png"
-                    image.save(temp_file, format='PNG', optimize=True, quality=100)
-                    return temp_file
-            except Exception as fallback_e:
-                logger.error(f"Fallback capture also failed: {fallback_e}")
-            
-            raise inner_e
-            
-    except Exception as e:
-        logger.error(f"Error capturing heatmap: {e}")
-        if 'driver' in locals():
-            driver.quit()
+                driver.save_screenshot(fallback_name)
+                logger.info(f"Fallback full-page screenshot saved as {fallback_name}")
+                return fallback_name
+            except Exception as fb:
+                logger.error(f"Fallback screenshot failed: {fb}")
         return None
+
     finally:
-        if 'driver' in locals():
+        if driver:
             driver.quit()
 
 def get_bitcoin_price():
     """Fetch the current Bitcoin price from CoinGecko API"""
     try:
-        # CoinGecko API is free and doesn't require authentication for basic usage
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
             price = data.get('bitcoin', {}).get('usd')
-            if price:
-                return f"${price:,.2f}"  # Format with commas and 2 decimal places
-        
-        logger.warning(f"Failed to get Bitcoin price: {response.status_code}")
-        return None
+            return f"${price:,.2f}" if price else None
+        logger.warning(f"CoinGecko API returned {resp.status_code}")
     except Exception as e:
-        logger.error(f"Error fetching Bitcoin price: {e}")
-        return None
-    
-def send_Monthly_heatmap():
-    """Capture and send the Monthly heatmap"""
+        logger.error(f"Error fetching BTC price: {e}")
+    return None
+
+def send_heatmap_24h():
+    """Capture and send the 24‑hour heatmap"""
     try:
-        logger.info("Starting Monthly heatmap task")
-        
-        # Capture the heatmap
-        heatmap_file = capture_coinglass_heatmap()
-        
-        if not heatmap_file:
-            logger.error("Failed to capture heatmap")
-            bot.send_message(CHANNEL_ID, "Failed to capture today's Bitcoin liquidation heatmap.")
+        logger.info("Running 24‑hour heatmap task")
+        file_path = capture_coinglass_heatmap("24 hour")
+        if not file_path:
+            bot.send_message(CHANNEL_ID, "❌ 无法获取24小时比特币爆仓热力图。")
             return
-        
-        # Get current Bitcoin price
-        btc_price = get_bitcoin_price()
-        price_text = f"BTC Price: {btc_price}" if btc_price else ""
-        
-        # Send the image with caption including Bitcoin price
-        with open(heatmap_file, 'rb') as photo:
-            caption = f"📊 Monthly Bitcoin Liquidation Heatmap - {datetime.now().strftime('%Y-%m-%d')}\n"
-            if price_text:
-                caption += f"💰 {price_text}\n"
-            
+
+        price = get_bitcoin_price()
+        caption = f"📊 24‑Hour Bitcoin Liquidation Heatmap — {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC"
+        if price:
+            caption += f"\n💰 BTC Price: {price}"
+
+        with open(file_path, 'rb') as photo:
             bot.send_photo(CHANNEL_ID, photo, caption=caption)
-            
-        # Clean up the file
-        os.remove(heatmap_file)
-        logger.info("Monthly heatmap sent successfully")
-        
+        os.remove(file_path)
+        logger.info("Heatmap sent successfully")
+
     except Exception as e:
-        logger.error(f"Error in send_Monthly_heatmap: {e}")
+        logger.error(f"Error in send_heatmap_24h: {e}")
         try:
-            bot.send_message(CHANNEL_ID, "Error sending today's Bitcoin liquidation heatmap. Will try again tomorrow.")
-        except:
-            logger.error("Could not send error message to channel")
+            bot.send_message(CHANNEL_ID, "⚠️ 发送24小时热力图时出错。")
+        except Exception:
+            pass
+
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    bot.reply_to(message, "Bot started! I will send Monthly Bitcoin liquidation heatmaps from Coinglass.")
+    bot.reply_to(message, "Bot 已启动！我将每四小时发送一次24小时比特币爆仓热力图。")
 
 @bot.message_handler(commands=['heatmap'])
 def handle_manual_heatmap(message):
-    """Handle manual requests for the heatmap"""
-    bot.reply_to(message, "Fetching the latest Bitcoin liquidation heatmap...")
+    bot.reply_to(message, "正在获取最新的24小时比特币爆仓热力图…")
     try:
-        heatmap_file = capture_coinglass_heatmap()
-        
-        if not heatmap_file:
-            bot.reply_to(message, "Sorry, I couldn't fetch the heatmap at this time.")
+        file_path = capture_coinglass_heatmap("24 hour")
+        if not file_path:
+            bot.reply_to(message, "抱歉，目前无法获取热力图。")
             return
-        
-        # Get current Bitcoin price
-        btc_price = get_bitcoin_price()
-        price_text = f"BTC Price: {btc_price}" if btc_price else ""
-            
-        with open(heatmap_file, 'rb') as photo:
-            caption = f"📊 Bitcoin Liquidation Heatmap - {datetime.now().strftime('%Y-%m-%d')}\n"
-            if price_text:
-                caption += f"💰 {price_text}\n"
-            
+        price = get_bitcoin_price()
+        caption = f"📊 Bitcoin Liquidation Heatmap — {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC"
+        if price:
+            caption += f"\n💰 BTC Price: {price}"
+        with open(file_path, 'rb') as photo:
             bot.send_photo(message.chat.id, photo, caption=caption)
-            
-        os.remove(heatmap_file)
-        
+        os.remove(file_path)
     except Exception as e:
-        logger.error(f"Error handling manual heatmap request: {e}")
-        bot.reply_to(message, "An error occurred while fetching the heatmap.")
+        logger.error(f"Manual heatmap error: {e}")
+        bot.reply_to(message, "获取热力图时发生错误。")
 
 def main():
-    """Main function to run the bot"""
-    logger.info("Starting the Coinglass Bitcoin Liquidation Heatmap bot")
-    
-    # Schedule the Monthly task - adjust time as needed
-    schedule.every(4).hours.do(send_Monthly_heatmap) # UTC time
-    
-    # Send an initial heatmap
-    send_Monthly_heatmap()
-    
-    # Start the bot polling in a separate thread
+    logger.info("Starting Coinglass Bitcoin Liquidation Heatmap bot")
+    # 每隔 4 小时执行一次
+    schedule.every(4).hours.do(send_heatmap_24h)
+    # 启动时立即发送一次
+    send_heatmap_24h()
+    # 启动 Telegram Polling
     import threading
     threading.Thread(target=bot.polling, kwargs={"none_stop": True}).start()
-    
-    # Run the scheduler
+    # 运行调度
     while True:
         schedule.run_pending()
         time.sleep(60)
