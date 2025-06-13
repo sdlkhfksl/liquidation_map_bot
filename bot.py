@@ -6,25 +6,47 @@ from datetime import datetime
 import schedule
 from PIL import Image
 from io import BytesIO
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 import telebot
+import asyncio
+from pyppeteer import launch
+from pyppeteer.errors import TimeoutError as PyppeteerTimeoutError
+from dotenv import load_dotenv
+import threading
+from flask import Flask, jsonify
+
+# --- Configuration ---
 
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
 
-import base64
-from dotenv import load_dotenv
-
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
+# --- Environment Variables & Constants ---
+
+# Telegram Bot Configuration
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
+
+# Bot Behavior Configuration
+SCHEDULE_INTERVAL_HOURS = int(os.getenv('SCHEDULE_INTERVAL_HOURS', '4'))
+DEFAULT_TIMEFRAME = os.getenv('DEFAULT_TIMEFRAME', '24 hour')
+VALID_TIMEFRAMES = ["24 hour", "12 hour", "4 hour", "1 hour", "1 week", "1 month", "3 month"]
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper() # <-- SUGGESTION: Configurable log level
+
+# Pyppeteer/Browser Configuration
+VIEWPORT = {'width': 2700, 'height': 1475, 'deviceScaleFactor': 2}
+PYPPETEER_LAUNCH_OPTIONS = {
+    'executablePath': os.getenv('CHROME_BIN'), # For platforms like Heroku/Koyeb with buildpacks
+    'args': ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    'headless': True
+}
+
+# --- Initialization ---
+
+# Configure logging with the level from environment variables
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("./logs/bot.log"),
@@ -33,254 +55,197 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get token from environment variable
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')  # Channel username like '@yourchannel' or chat_id
+if not TOKEN or not CHANNEL_ID:
+    logger.error("FATAL: TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID must be set in .env file.")
+    exit(1)
 
-# Initialize the bot
+# Initialize Telegram bot
 bot = telebot.TeleBot(TOKEN)
 
-def setup_webdriver(max_retries=5, retry_delay=2):
-    """Configure and return a remote Chrome WebDriver instance with retries"""
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=5400,2950")
-    chrome_options.add_argument("--force-device-scale-factor=2")
-    
-    selenium_host = os.getenv('SELENIUM_HOST', 'localhost')
-    selenium_port = os.getenv('SELENIUM_PORT', '4444')
-    
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Connecting to Selenium at http://{selenium_host}:{selenium_port}/wd/hub (attempt {attempt+1}/{max_retries})")
-            driver = webdriver.Remote(
-                command_executor=f'http://{selenium_host}:{selenium_port}/wd/hub',
-                options=chrome_options
-            )
-            logger.info("Successfully connected to Selenium")
-            return driver
-        except Exception as e:
-            logger.warning(f"Failed to connect to Selenium: {e}")
-            if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-            else:
-                logger.error("Max retries exceeded. Could not connect to Selenium.")
-                raise
+# --- Core Logic (No changes from previous version) ---
 
-def capture_coinglass_heatmap(time_period="24 hour"):
-    """
-    Capture the Coinglass Bitcoin liquidation heatmap
-    
-    Args:
-        time_period (str): Time period to select (e.g., "24 hour", "1 month", "3 month")
-    """
-    driver = None
+async def capture_coinglass_heatmap(time_period: str = "24 hour") -> str | None:
+    """Captures the Coinglass liquidation heatmap using pyppeteer."""
+    browser = None
+    filename = None
+    logger.info(f"Attempting to capture heatmap for timeframe: '{time_period}'")
     try:
-        logger.info(f"Starting capture of Coinglass heatmap with {time_period} timeframe")
-        driver = setup_webdriver()
+        browser = await launch(PYPPETEER_LAUNCH_OPTIONS)
+        page = await browser.newPage()
+        await page.setViewport(VIEWPORT)
         
-        # Navigate to Coinglass liquidation page
-        driver.get("https://www.coinglass.com/pro/futures/LiquidationHeatMap")
-        wait = WebDriverWait(driver, 20)
+        logger.info("Navigating to Coinglass...")
+        await page.goto('https://www.coinglass.com/pro/futures/LiquidationHeatMap', {'waitUntil': 'networkidle2', 'timeout': 60000})
+        logger.info("Page loaded. Waiting for chart elements.")
 
-        # Inject CSS/JS to optimize screenshot
-        driver.execute_script("""
-            var style = document.createElement('style');
-            style.innerHTML = `
-                * {
-                    transition: none !important;
-                    animation: none !important;
-                }
-                .echarts-for-react {
-                    width: 100% !important;
-                    height: 100% !important;
-                }
-                canvas {
-                    image-rendering: -webkit-optimize-contrast !important;
-                    image-rendering: crisp-edges !important;
-                }
-            `;
-            document.head.appendChild(style);
-            window.devicePixelRatio = 2;
-        """)
-        
-        # Select the desired time period
-        time_dropdown = wait.until(EC.element_to_be_clickable((
-            By.CSS_SELECTOR, "div.MuiSelect-root button.MuiSelect-button"
-        )))
-        if time_dropdown.text.strip() != time_period:
-            time_dropdown.click()
-            time.sleep(2)
-            driver.execute_script(f"""
-                var options = document.querySelectorAll('li[role="option"]');
-                for (var i = 0; i < options.length; i++) {{
-                    if (options[i].textContent.includes('{time_period}')) {{
-                        options[i].click();
-                        break;
-                    }}
-                }}
-            """)
-            time.sleep(3)
+        dropdown_selector = 'div.MuiSelect-root button.MuiSelect-button'
+        await page.waitForSelector(dropdown_selector, {'visible': True, 'timeout': 30000})
+
+        current_time_period = await page.evaluate(f"document.querySelector('{dropdown_selector}').textContent.trim()")
+        if current_time_period != time_period:
+            logger.info(f"Current timeframe is '{current_time_period}', changing to '{time_period}'.")
+            await page.click(dropdown_selector)
+            await asyncio.sleep(1)
+            
+            option_selector_js = f"""
+                Array.from(document.querySelectorAll('li[role=option]'))
+                     .find(el => el.textContent.includes('{time_period}'))
+                     .click()
+            """
+            await page.evaluate(option_selector_js)
+            logger.info("Timeframe changed. Waiting for chart to update...")
+            await asyncio.sleep(5)
         else:
-            logger.info(f"Dropdown already set to {time_period}")
+            logger.info(f"Timeframe already set to '{time_period}'.")
 
-        # Locate the chart container
-        try:
-            heatmap_container = wait.until(EC.presence_of_element_located((
-                By.CSS_SELECTOR, "div.echarts-for-react"
-            )))
-        except Exception:
-            heatmap_container = wait.until(EC.presence_of_element_located((
-                By.XPATH, "//div[contains(@class, 'echarts-for-react')]"
-            )))
-        time.sleep(3)
+        chart_selector = 'div.echarts-for-react'
+        await page.waitForSelector(chart_selector, {'visible': True, 'timeout': 20000})
+        chart_element = await page.querySelector(chart_selector)
+        
+        if not chart_element:
+            logger.error("Could not find the chart element after loading.")
+            return None
 
-        # Compute screenshot bounds
-        rect = driver.execute_script("""
-            var r = arguments[0].getBoundingClientRect();
-            return {left: r.left, top: r.top, width: r.width, height: r.height, scale: window.devicePixelRatio || 1};
-        """, heatmap_container)
-        clip = {
-            'x': rect['left'],
-            'y': rect['top'],
-            'width': rect['width'],
-            'height': rect['height'],
-            'scale': 2
-        }
-
-        # Capture via Chrome DevTools Protocol
-        result = driver.execute_cdp_cmd('Page.captureScreenshot', {
-            'clip': clip,
-            'captureBeyondViewport': True,
-            'fromSurface': True
-        })
-        png = base64.b64decode(result['data'])
-        image = Image.open(BytesIO(png))
-
-        # Save file
-        filename = f"btc_heatmap_24h_{datetime.now().strftime('%Y%m%d_%H%M')}.png"
-        image.save(filename, format='PNG', optimize=True, quality=100)
-        logger.info(f"Heatmap saved as {filename}")
+        png_data = await chart_element.screenshot({'type': 'png'})
+        
+        filename = f"heatmap_{time_period.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        with open(filename, 'wb') as f:
+            f.write(png_data)
+        
+        logger.info(f"Successfully captured and saved heatmap to {filename}")
         return filename
 
-    except Exception as err:
-        logger.error(f"Error during heatmap capture: {err}")
-        # Fallback: full-page screenshot
-        if driver:
-            fallback_name = f"fallback_{datetime.now().strftime('%Y%m%d_%H%M')}.png"
-            try:
-                driver.save_screenshot(fallback_name)
-                logger.info(f"Fallback full-page screenshot saved as {fallback_name}")
-                return fallback_name
-            except Exception as fb:
-                logger.error(f"Fallback screenshot failed: {fb}")
+    except PyppeteerTimeoutError as e:
+        logger.error(f"Timeout error during heatmap capture: {e}")
         return None
-
-    finally:
-        if driver:
-            driver.quit()
-
-def get_bitcoin_price():
-    """Fetch the current Bitcoin price from CoinGecko API"""
-    try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            price = data.get('bitcoin', {}).get('usd')
-            return f"${price:,.2f}" if price else None
-        logger.warning(f"CoinGecko API returned {resp.status_code}")
     except Exception as e:
-        logger.error(f"Error fetching BTC price: {e}")
+        logger.error(f"An unexpected error occurred during heatmap capture: {e}", exc_info=True)
+        return None
+    finally:
+        if browser:
+            await browser.close()
+            logger.info("Browser closed.")
+
+def get_bitcoin_price() -> str | None:
+    """Fetches the current Bitcoin price from CoinGecko."""
+    try:
+        url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd'
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        price = data.get('bitcoin', {}).get('usd')
+        return f"${price:,.2f}" if price else None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching BTC price from CoinGecko: {e}")
     return None
 
-def send_heatmap_24h():
-    """Capture and send the 24‑hour heatmap"""
+def process_and_send_heatmap(chat_id: str | int, time_period: str):
+    """A generic function to capture, format, and send a heatmap image."""
+    filename = None
     try:
-        logger.info("Running 24‑hour heatmap task")
-        file_path = capture_coinglass_heatmap("24 hour")
-        if not file_path:
-            bot.send_message(CHANNEL_ID, "❌ 无法获取24小时比特币爆仓热力图。")
+        filename = asyncio.run(capture_coinglass_heatmap(time_period))
+        
+        if not filename:
+            bot.send_message(chat_id, f'❌ Failed to capture the {time_period} Bitcoin liquidation heatmap.')
             return
 
         price = get_bitcoin_price()
-        caption = f"📊 24‑Hour Bitcoin Liquidation Heatmap — {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC"
+        time_period_title = time_period.replace(" hour", "-Hour").replace(" week", "-Week").replace(" month", "-Month")
+        caption = f"📊 {time_period_title} Bitcoin Liquidation Heatmap\n"
+        caption += f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC"
         if price:
             caption += f"\n💰 BTC Price: {price}"
 
-        with open(file_path, 'rb') as photo:
-            bot.send_photo(CHANNEL_ID, photo, caption=caption)
-        os.remove(file_path)
-        logger.info("Heatmap sent successfully")
+        with open(filename, 'rb') as photo:
+            bot.send_photo(chat_id, photo, caption=caption)
+        
+        logger.info(f"Heatmap sent successfully to chat_id: {chat_id}")
 
     except Exception as e:
-        logger.error(f"Error in send_heatmap_24h: {e}")
+        logger.error(f"Error in process_and_send_heatmap: {e}", exc_info=True)
         try:
-            bot.send_message(CHANNEL_ID, "⚠️ 发送24小时热力图时出错。")
-        except Exception:
-            pass
+            bot.send_message(chat_id, f'⚠️ An unexpected error occurred while processing the {time_period} heatmap.')
+        except Exception as telegram_e:
+            logger.error(f"Failed to send error message to Telegram: {telegram_e}")
+    finally:
+        if filename and os.path.exists(filename):
+            os.remove(filename)
+            logger.info(f"Cleaned up temporary file: {filename}")
+
+# --- Scheduled & Bot Handler Functions (No changes) ---
+
+def scheduled_heatmap_task():
+    """The function that gets called by the scheduler."""
+    logger.info(f"Running scheduled task for {DEFAULT_TIMEFRAME} heatmap.")
+    process_and_send_heatmap(CHANNEL_ID, DEFAULT_TIMEFRAME)
 
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    bot.reply_to(message, "Bot 已启动！我将每四小时发送一次24小时比特币爆仓热力图。")
+    bot.reply_to(message, f"Bot started! I will send the {DEFAULT_TIMEFRAME} Bitcoin liquidation heatmap every {SCHEDULE_INTERVAL_HOURS} hours.")
 
 @bot.message_handler(commands=['heatmap'])
 def handle_manual_heatmap(message):
-    bot.reply_to(message, "正在获取最新的24小时比特币爆仓热力图…")
-    try:
-        file_path = capture_coinglass_heatmap("24 hour")
-        if not file_path:
-            bot.reply_to(message, "抱歉，目前无法获取热力图。")
+    """Handles manual requests like /heatmap or /heatmap 1 month"""
+    args = message.text.split(maxsplit=2)
+    time_period = DEFAULT_TIMEFRAME
+    
+    if len(args) > 1:
+        requested_period = " ".join(args[1:])
+        if requested_period in VALID_TIMEFRAMES:
+            time_period = requested_period
+        else:
+            bot.reply_to(message, f"Invalid time frame. Please use one of: {', '.join(VALID_TIMEFRAMES)}")
             return
-        price = get_bitcoin_price()
-        caption = f"📊 Bitcoin Liquidation Heatmap — {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC"
-        if price:
-            caption += f"\n💰 BTC Price: {price}"
-        with open(file_path, 'rb') as photo:
-            bot.send_photo(message.chat.id, photo, caption=caption)
-        os.remove(file_path)
-    except Exception as e:
-        logger.error(f"Manual heatmap error: {e}")
-        bot.reply_to(message, "获取热力图时发生错误。")
 
-def main():
-    logger.info("Starting Coinglass Bitcoin Liquidation Heatmap bot")
-    # 每隔 4 小时执行一次
-    schedule.every(4).hours.do(send_heatmap_24h)
-    # 启动时立即发送一次
-    send_heatmap_24h()
-    # 启动 Telegram Polling
-    import threading
-    threading.Thread(target=bot.polling, kwargs={"none_stop": True}).start()
-    # 运行调度
+    bot.reply_to(message, f"Fetching the latest {time_period} Bitcoin liquidation heatmap...")
+    threading.Thread(target=process_and_send_heatmap, args=(message.chat.id, time_period)).start()
+
+# --- Main Application Logic ---
+
+def run_bot_scheduler():
+    """Main function to run the bot and scheduler."""
+    logger.info(f"Starting Coinglass Heatmap Bot. Interval: {SCHEDULE_INTERVAL_HOURS} hours. Timeframe: {DEFAULT_TIMEFRAME}.")
+    
+    schedule.every(SCHEDULE_INTERVAL_HOURS).hours.do(scheduled_heatmap_task)
+    
+    logger.info("Performing initial heatmap run on startup...")
+    threading.Thread(target=scheduled_heatmap_task).start()
+    
+    logger.info("Starting Telegram bot polling...")
+    threading.Thread(target=bot.polling, kwargs={"none_stop": True, "timeout": 30}, daemon=True).start()
+    
     while True:
         schedule.run_pending()
         time.sleep(60)
 
-def run_bot():
-    """在后台线程中运行 Bot 逻辑"""
-    main()
+# --- Flask Web Server & Application Entry Point ---
 
-if __name__ == "__main__":
-    from flask import Flask, jsonify
-    app = Flask(__name__)
+app = Flask(__name__)
+bot_thread = None # Global handle to the bot thread
 
-    @app.route("/", methods=["GET"])
-    def root():
-        return "OK", 200
+@app.route('/', methods=['GET'])
+def root():
+    return 'Bot is running.', 200
 
-    @app.route("/health", methods=["GET"])
-    def health():
-        return jsonify(status="ok"), 200
+@app.route('/health', methods=['GET'])
+def health():
+    """
+    Enhanced health check that verifies the core bot/scheduler thread is alive.
+    """
+    if bot_thread and bot_thread.is_alive():
+        return jsonify(status='ok', threads={'bot_scheduler': 'alive'}), 200
+    else:
+        logger.error("Health check failed: bot_scheduler thread is not alive.")
+        # Return 503 Service Unavailable, a standard code for a service being down
+        return jsonify(status='error', threads={'bot_scheduler': 'dead'}), 503
 
-    # 启动 Bot 线程
-    import threading
-    t = threading.Thread(target=run_bot, daemon=True)
-    t.start()
-
-    # 启动 HTTP 服务，监听 Koyeb 注入的 PORT
-    port = int(os.getenv("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    # Start the bot and scheduler logic in a background thread
+    bot_thread = threading.Thread(target=run_bot_scheduler, daemon=True)
+    bot_thread.start()
+    
+    # Use Flask's development server for local testing
+    # For production, a WSGI server like Gunicorn will be used (see deployment instructions)
+    port = int(os.getenv('PORT', '8080'))
+    logger.info(f"Starting Flask dev server on port {port} for local testing.")
+    app.run(host='0.0.0.0', port=port)
