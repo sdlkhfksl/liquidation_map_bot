@@ -1,5 +1,4 @@
-# requirements.txt
-
+# --- START OF requirements.txt ---
 telebot
 pyTelegramBotAPI
 selenium
@@ -9,3 +8,4 @@ schedule
 Pillow
 Flask
 gunicorn
+# --- END OF requirements.txt ---
