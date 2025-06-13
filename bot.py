@@ -12,12 +12,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import telebot
+
+# Ensure logs directory exists
+os.makedirs("logs", exist_ok=True)
+
 import base64
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-os.makedirs("logs", exist_ok=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -256,5 +260,27 @@ def main():
         schedule.run_pending()
         time.sleep(60)
 
-if __name__ == "__main__":
+def run_bot():
+    """在后台线程中运行 Bot 逻辑"""
     main()
+
+if __name__ == "__main__":
+    from flask import Flask, jsonify
+    app = Flask(__name__)
+
+    @app.route("/", methods=["GET"])
+    def root():
+        return "OK", 200
+
+    @app.route("/health", methods=["GET"])
+    def health():
+        return jsonify(status="ok"), 200
+
+    # 启动 Bot 线程
+    import threading
+    t = threading.Thread(target=run_bot, daemon=True)
+    t.start()
+
+    # 启动 HTTP 服务，监听 Koyeb 注入的 PORT
+    port = int(os.getenv("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port)
