@@ -66,7 +66,7 @@ def setup_webdriver(max_retries=5, retry_delay=2):
                 logger.error("Max retries exceeded. Could not connect to Selenium.")
                 raise
 
-def capture_coinglass_heatmap(time_period="1 month"):
+def capture_coinglass_heatmap(time_period="24 hour"):
     """
     Capture the Coinglass Bitcoin liquidation heatmap
     
@@ -317,7 +317,7 @@ def main():
     logger.info("Starting the Coinglass Bitcoin Liquidation Heatmap bot")
     
     # Schedule the Monthly task - adjust time as needed
-    schedule.every().day.at("08:00").do(send_Monthly_heatmap)  # UTC time
+    schedule.every(4).hours.do(send_Monthly_heatmap) # UTC time
     
     # Send an initial heatmap
     send_Monthly_heatmap()
