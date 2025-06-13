@@ -1,13 +1,12 @@
-# --- START OF FILE Dockerfile ---
+# --- START OF Dockerfile ---
 
-# Use a standard Python base image
+# 使用一个标准的 Python 3.11 slim 基础镜像
 FROM python:3.11-slim
 
-# Set the working directory
+# 设置工作目录
 WORKDIR /app
 
-# Install system dependencies needed for Chrome and Python libraries
-# Including jq for parsing JSON and unzip
+# 安装系统依赖，包括 Chrome 浏览器运行所需要的一切
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg \
@@ -16,37 +15,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Install Google Chrome (Stable) ---
+# --- 安装 Google Chrome (稳定版) ---
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Install ChromeDriver (matching the installed Chrome version) ---
-# This script automatically finds the correct driver for the installed Chrome version
+# --- 安装 ChromeDriver (自动匹配已安装的 Chrome 版本) ---
 RUN CHROME_DRIVER_URL=$(wget -qO- "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform=="linux64") | .url') \
-    && echo "Downloading ChromeDriver from $CHROME_DRIVER_URL" \
     && wget -q --continue -P /tmp/ "$CHROME_DRIVER_URL" \
     && unzip -q /tmp/chromedriver-linux64.zip -d /usr/local/bin/ \
     && rm /tmp/chromedriver-linux64.zip \
-    # The extracted driver is often in a subdirectory, move it to the path
     && mv /usr/local/bin/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
     && rmdir /usr/local/bin/chromedriver-linux64 \
     && chmod +x /usr/local/bin/chromedriver
 
-# Copy and install Python dependencies
+# 复制并安装 Python 依赖
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
+# 复制整个应用程序代码
 COPY . .
 
-# Expose the port the app runs on
+# 暴露 Gunicorn 运行的端口
 EXPOSE 8000
 
-# Set the command to run the application using Gunicorn
-# Using the post_fork hook to start background tasks in each worker
+# --- 最终启动命令 ---
+# 这是 Koyeb 将会执行的唯一命令。
+# 它使用 Gunicorn 启动 bot.py 中的 'app' Flask 应用。
+# post_fork hook 是 Gunicorn 的一个高级功能，用于在 web 服务器启动后，安全地启动我们的后台任务。
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4", "bot:app", "--post-fork", "bot:post_fork"]
 
-# --- END OF FILE Dockerfile ---
+# --- END OF Dockerfile ---
