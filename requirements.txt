@@ -8,4 +8,4 @@ schedule
 Pillow
 Flask
 gunicorn
-# --- END OF FILE requirements.txt ---
+selenium
