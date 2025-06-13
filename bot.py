@@ -1,182 +1,132 @@
+# bot.py (最终版 - 使用 ScreenshotOne API 精确抓取 Canvas)
+
 import os
 import logging
 import requests
 import time
 from datetime import datetime
 import schedule
-from PIL import Image
-from io import BytesIO
 import telebot
-import asyncio
-from pyppeteer import launch
-from pyppeteer.errors import TimeoutError as PyppeteerTimeoutError
 from dotenv import load_dotenv
 import threading
 from flask import Flask, jsonify
 
 # --- Configuration ---
-
-# Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
-
-# Load environment variables from .env file
 load_dotenv()
 
 # --- Environment Variables & Constants ---
-
-# Telegram Bot Configuration
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
+SCREENSHOTONE_API_KEY = os.getenv('SCREENSHOTONE_API_KEY')
 
-# Bot Behavior Configuration
 SCHEDULE_INTERVAL_HOURS = int(os.getenv('SCHEDULE_INTERVAL_HOURS', '4'))
 DEFAULT_TIMEFRAME = os.getenv('DEFAULT_TIMEFRAME', '24 hour')
 VALID_TIMEFRAMES = ["24 hour", "12 hour", "4 hour", "1 hour", "1 week", "1 month", "3 month"]
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 
-# Pyppeteer/Browser Configuration
-PYPPETEER_LAUNCH_OPTIONS = {
-    'executablePath': os.getenv('CHROME_BIN'), # For platforms like Heroku/Koyeb with buildpacks
-    'args': ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-    'headless': True
-}
-VIEWPORT = {'width': 2700, 'height': 1475, 'deviceScaleFactor': 2}
-
-
 # --- Initialization ---
-
-# Configure logging with the level from environment variables
 logging.basicConfig(
     level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("./logs/bot.log"),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler("./logs/bot.log"), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-if not TOKEN or not CHANNEL_ID:
-    logger.error("FATAL: TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID must be set in .env file.")
+if not all([TOKEN, CHANNEL_ID, SCREENSHOTONE_API_KEY]):
+    logger.error("FATAL: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, and SCREENSHOTONE_API_KEY must be set.")
     exit(1)
 
-# Initialize Telegram bot
 bot = telebot.TeleBot(TOKEN)
 
-# --- Core Logic ---
+# --- Core Logic (已替换为 API 调用并优化选择器) ---
 
-async def capture_coinglass_heatmap(time_period: str = "24 hour") -> str | None:
-    """Captures the Coinglass liquidation heatmap using pyppeteer."""
-    browser = None
-    filename = None
-    logger.info(f"Attempting to capture heatmap for timeframe: '{time_period}'")
+def capture_coinglass_heatmap_api(time_period: str = "24 hour") -> bytes | None:
+    """
+    Captures the Coinglass heatmap using the ScreenshotOne API by targeting the canvas element.
+    Returns the raw image data as bytes, or None on failure.
+    """
+    logger.info(f"Requesting screenshot from API for timeframe: '{time_period}'")
+    
+    js_script = f"""
+    async () => {{
+        const dropdown = document.querySelector('div.MuiSelect-root button.MuiSelect-button');
+        if (dropdown && dropdown.textContent.trim() !== '{time_period}') {{
+            dropdown.click();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            const option = Array.from(document.querySelectorAll('li[role=option]')).find(el => el.textContent.includes('{time_period}'));
+            if (option) {{
+                option.click();
+                await new Promise(resolve => setTimeout(resolve, 4000)); 
+            }}
+        }}
+    }}()
+    """
+    
+    # 使用精确的 Canvas 选择器
+    canvas_selector = 'canvas[data-zr-dom-id^="zr_"]'
+    
+    params = {
+        "access_key": SCREENSHOTONE_API_KEY,
+        "url": "https://www.coinglass.com/pro/futures/LiquidationHeatMap",
+        "selector": canvas_selector,
+        "block_cookie_banners": "true",
+        "block_ads": "true",
+        "response_type": "image",
+        "image_quality": "90",
+        "viewport_width": "1920",
+        "viewport_height": "1080",
+        "wait_for_selector": canvas_selector,
+        "scripts": js_script,
+    }
+
     try:
-        browser = await launch(PYPPETEER_LAUNCH_OPTIONS)
-        page = await browser.newPage()
-        await page.setViewport(VIEWPORT)
-        
-        logger.info("Navigating to Coinglass...")
-        await page.goto('https://www.coinglass.com/pro/futures/LiquidationHeatMap', {'waitUntil': 'networkidle2', 'timeout': 60000})
-        logger.info("Page loaded. Waiting for chart elements.")
-
-        dropdown_selector = 'div.MuiSelect-root button.MuiSelect-button'
-        await page.waitForSelector(dropdown_selector, {'visible': True, 'timeout': 30000})
-
-        current_time_period = await page.evaluate(f"document.querySelector('{dropdown_selector}').textContent.trim()")
-        if current_time_period != time_period:
-            logger.info(f"Current timeframe is '{current_time_period}', changing to '{time_period}'.")
-            await page.click(dropdown_selector)
-            await asyncio.sleep(1)
-            
-            option_selector_js = f"""
-                Array.from(document.querySelectorAll('li[role=option]'))
-                     .find(el => el.textContent.includes('{time_period}'))
-                     .click()
-            """
-            await page.evaluate(option_selector_js)
-            logger.info("Timeframe changed. Waiting for chart to update...")
-            await asyncio.sleep(5)
-        else:
-            logger.info(f"Timeframe already set to '{time_period}'.")
-
-        chart_selector = 'div.echarts-for-react'
-        await page.waitForSelector(chart_selector, {'visible': True, 'timeout': 20000})
-        chart_element = await page.querySelector(chart_selector)
-        
-        if not chart_element:
-            logger.error("Could not find the chart element after loading.")
-            return None
-
-        png_data = await chart_element.screenshot({'type': 'png'})
-        
-        filename = f"heatmap_{time_period.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        with open(filename, 'wb') as f:
-            f.write(png_data)
-        
-        logger.info(f"Successfully captured and saved heatmap to {filename}")
-        return filename
-
-    except PyppeteerTimeoutError as e:
-        logger.error(f"Timeout error during heatmap capture: {e}")
+        response = requests.get("https://api.screenshotone.com/take", params=params, timeout=90)
+        response.raise_for_status()
+        logger.info("Successfully received image from ScreenshotOne API.")
+        return response.content
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error calling ScreenshotOne API: {e}")
+        if e.response is not None:
+            logger.error(f"API Response Status: {e.response.status_code}, Body: {e.response.text}")
         return None
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during heatmap capture: {e}", exc_info=True)
-        return None
-    finally:
-        if browser:
-            await browser.close()
-            logger.info("Browser closed.")
 
 def get_bitcoin_price() -> str | None:
-    """Fetches the current Bitcoin price from CoinGecko."""
+    # (此函数保持不变)
     try:
-        url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd'
-        resp = requests.get(url, timeout=10)
+        resp = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', timeout=10)
         resp.raise_for_status()
         data = resp.json()
         price = data.get('bitcoin', {}).get('usd')
         return f"${price:,.2f}" if price else None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching BTC price from CoinGecko: {e}")
-    return None
+        logger.error(f"Error fetching BTC price: {e}")
+        return None
 
 def process_and_send_heatmap(chat_id: str | int, time_period: str):
-    """A generic function to capture, format, and send a heatmap image."""
-    filename = None
+    # (此函数保持不变)
     try:
-        filename = asyncio.run(capture_coinglass_heatmap(time_period))
-        
-        if not filename:
+        image_data = capture_coinglass_heatmap_api(time_period)
+        if not image_data:
             bot.send_message(chat_id, f'❌ Failed to capture the {time_period} Bitcoin liquidation heatmap.')
             return
-
         price = get_bitcoin_price()
         time_period_title = time_period.replace(" hour", "-Hour").replace(" week", "-Week").replace(" month", "-Month")
         caption = f"📊 {time_period_title} Bitcoin Liquidation Heatmap\n"
         caption += f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC"
         if price:
             caption += f"\n💰 BTC Price: {price}"
-
-        with open(filename, 'rb') as photo:
-            bot.send_photo(chat_id, photo, caption=caption)
-        
+        bot.send_photo(chat_id, image_data, caption=caption)
         logger.info(f"Heatmap sent successfully to chat_id: {chat_id}")
-
     except Exception as e:
         logger.error(f"Error in process_and_send_heatmap: {e}", exc_info=True)
         try:
             bot.send_message(chat_id, f'⚠️ An unexpected error occurred while processing the {time_period} heatmap.')
         except Exception as telegram_e:
             logger.error(f"Failed to send error message to Telegram: {telegram_e}")
-    finally:
-        if filename and os.path.exists(filename):
-            os.remove(filename)
-            logger.info(f"Cleaned up temporary file: {filename}")
 
-# --- Scheduled & Bot Handler Functions ---
-
+# --- Scheduled & Bot Handler Functions (保持不变) ---
 def scheduled_heatmap_task():
-    """The function that gets called by the scheduler."""
     logger.info(f"Running scheduled task for {DEFAULT_TIMEFRAME} heatmap.")
     process_and_send_heatmap(CHANNEL_ID, DEFAULT_TIMEFRAME)
 
@@ -186,10 +136,8 @@ def handle_start(message):
 
 @bot.message_handler(commands=['heatmap'])
 def handle_manual_heatmap(message):
-    """Handles manual requests like /heatmap or /heatmap 1 month"""
     args = message.text.split(maxsplit=2)
     time_period = DEFAULT_TIMEFRAME
-    
     if len(args) > 1:
         requested_period = " ".join(args[1:])
         if requested_period in VALID_TIMEFRAMES:
@@ -197,70 +145,44 @@ def handle_manual_heatmap(message):
         else:
             bot.reply_to(message, f"Invalid time frame. Please use one of: {', '.join(VALID_TIMEFRAMES)}")
             return
-
     bot.reply_to(message, f"Fetching the latest {time_period} Bitcoin liquidation heatmap...")
     threading.Thread(target=process_and_send_heatmap, args=(message.chat.id, time_period)).start()
 
-# --- Main Application Logic ---
-
+# --- Main Application Logic & Flask Server (保持不变) ---
 def run_bot_scheduler():
-    """Main function to run the bot and scheduler loop."""
-    logger.info(f"Starting Coinglass Heatmap Bot. Interval: {SCHEDULE_INTERVAL_HOURS} hours. Timeframe: {DEFAULT_TIMEFRAME}.")
-    
+    logger.info(f"Starting Bot Scheduler. Interval: {SCHEDULE_INTERVAL_HOURS} hours.")
     schedule.every(SCHEDULE_INTERVAL_HOURS).hours.do(scheduled_heatmap_task)
-    
     logger.info("Performing initial heatmap run on startup...")
     threading.Thread(target=scheduled_heatmap_task).start()
-    
     logger.info("Starting Telegram bot polling...")
     threading.Thread(target=bot.polling, kwargs={"none_stop": True, "timeout": 30}, daemon=True).start()
-    
     while True:
         schedule.run_pending()
         time.sleep(60)
 
-# --- Flask Web Server & Application Entry Point ---
-
 app = Flask(__name__)
-bot_thread = None # Global handle to the bot thread
+bot_thread = None
 
 def start_background_tasks():
-    """
-    Starts the bot and scheduler in a background thread.
-    This function is designed to be called by the Gunicorn post_fork hook.
-    """
     global bot_thread
-    # Ensure this runs only once per worker
     if bot_thread is None or not bot_thread.is_alive():
         logger.info("Starting background tasks for the bot...")
         bot_thread = threading.Thread(target=run_bot_scheduler, daemon=True)
         bot_thread.start()
-    else:
-        logger.info("Background tasks are already running.")
 
-@app.route('/', methods=['GET'])
-def root():
-    return 'Bot is running.', 200
+@app.route('/')
+def root(): return 'Bot is running.'
 
-@app.route('/health', methods=['GET'])
+@app.route('/health')
 def health():
-    """
-    Enhanced health check that verifies the core bot/scheduler thread is alive.
-    """
     if bot_thread and bot_thread.is_alive():
-        return jsonify(status='ok', threads={'bot_scheduler': 'alive'}), 200
+        return jsonify(status='ok'), 200
     else:
-        # If the thread is not started or has died, return a service unavailable error
-        logger.error("Health check failed: bot_scheduler thread is not alive or not started.")
-        return jsonify(status='error', threads={'bot_scheduler': 'dead or not started'}), 503
+        logger.error("Health check failed: bot_scheduler thread is not alive.")
+        return jsonify(status='error', reason='Background thread is not running'), 503
 
 if __name__ == '__main__':
-    # This block is for local development only.
-    # It starts the background tasks and the Flask development server.
-    # In production, Gunicorn will be used and will call start_background_tasks via a hook.
     logger.info("Starting application for local development...")
     start_background_tasks()
-    
     port = int(os.getenv('PORT', '8080'))
-    logger.info(f"Starting Flask dev server on port {port}.")
     app.run(host='0.0.0.0', port=port)
