@@ -1,4 +1,4 @@
-# bot.py (最终版 - 使用 ScreenshotOne API 精确抓取 Canvas)
+# bot.py (Corrected version for ScreenshotOne API)
 
 import os
 import logging
@@ -39,7 +39,7 @@ if not all([TOKEN, CHANNEL_ID, SCREENSHOTONE_API_KEY]):
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- Core Logic (已替换为 API 调用并优化选择器) ---
+# --- Core Logic (API Call Corrected) ---
 
 def capture_coinglass_heatmap_api(time_period: str = "24 hour") -> bytes | None:
     """
@@ -63,7 +63,6 @@ def capture_coinglass_heatmap_api(time_period: str = "24 hour") -> bytes | None:
     }}()
     """
     
-    # 使用精确的 Canvas 选择器
     canvas_selector = 'canvas[data-zr-dom-id^="zr_"]'
     
     params = {
@@ -72,7 +71,12 @@ def capture_coinglass_heatmap_api(time_period: str = "24 hour") -> bytes | None:
         "selector": canvas_selector,
         "block_cookie_banners": "true",
         "block_ads": "true",
-        "response_type": "image",
+        
+        # --- KEY FIX IS HERE ---
+        "response_type": "by_format",      # CORRECTED: Changed from "image"
+        "image_format": "png",             # ADDED: Specify the format when using "by_format"
+        # --- END OF FIX ---
+        
         "image_quality": "90",
         "viewport_width": "1920",
         "viewport_height": "1080",
@@ -91,8 +95,9 @@ def capture_coinglass_heatmap_api(time_period: str = "24 hour") -> bytes | None:
             logger.error(f"API Response Status: {e.response.status_code}, Body: {e.response.text}")
         return None
 
+# --- All other functions remain exactly the same ---
+
 def get_bitcoin_price() -> str | None:
-    # (此函数保持不变)
     try:
         resp = requests.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', timeout=10)
         resp.raise_for_status()
@@ -104,7 +109,6 @@ def get_bitcoin_price() -> str | None:
         return None
 
 def process_and_send_heatmap(chat_id: str | int, time_period: str):
-    # (此函数保持不变)
     try:
         image_data = capture_coinglass_heatmap_api(time_period)
         if not image_data:
@@ -125,7 +129,6 @@ def process_and_send_heatmap(chat_id: str | int, time_period: str):
         except Exception as telegram_e:
             logger.error(f"Failed to send error message to Telegram: {telegram_e}")
 
-# --- Scheduled & Bot Handler Functions (保持不变) ---
 def scheduled_heatmap_task():
     logger.info(f"Running scheduled task for {DEFAULT_TIMEFRAME} heatmap.")
     process_and_send_heatmap(CHANNEL_ID, DEFAULT_TIMEFRAME)
@@ -148,7 +151,6 @@ def handle_manual_heatmap(message):
     bot.reply_to(message, f"Fetching the latest {time_period} Bitcoin liquidation heatmap...")
     threading.Thread(target=process_and_send_heatmap, args=(message.chat.id, time_period)).start()
 
-# --- Main Application Logic & Flask Server (保持不变) ---
 def run_bot_scheduler():
     logger.info(f"Starting Bot Scheduler. Interval: {SCHEDULE_INTERVAL_HOURS} hours.")
     schedule.every(SCHEDULE_INTERVAL_HOURS).hours.do(scheduled_heatmap_task)
