@@ -5,3 +5,6 @@ schedule
 python-dotenv
 requests
 telebot
+pytelegrambotapi
+Flask
+
