@@ -1,17 +1,13 @@
-services:
-  - name: bot
-    type: web
-    builder: dockerfile
-    docker:
-      file: ./Dockerfile
-      command: ["gunicorn"]
-      args:
-        - "--bind"
-        - "0.0.0.0:8000"
-        - "--workers"
-        - "1"
-        - "--threads"
-        - "4"
-        - "bot:app"
-        - "--post-fork"
-        - "bot:post_fork"
+docker:
+  file: ./Dockerfile
+  command: ["gunicorn"]
+  args:
+    - "--bind"
+    - "0.0.0.0:8000"
+    - "--workers"
+    - "1"
+    - "--threads"
+    - "4"
+    - "bot:app"
+    - "--post-fork"
+    - "bot:post_fork"
