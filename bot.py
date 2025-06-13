@@ -32,15 +32,16 @@ CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
 SCHEDULE_INTERVAL_HOURS = int(os.getenv('SCHEDULE_INTERVAL_HOURS', '4'))
 DEFAULT_TIMEFRAME = os.getenv('DEFAULT_TIMEFRAME', '24 hour')
 VALID_TIMEFRAMES = ["24 hour", "12 hour", "4 hour", "1 hour", "1 week", "1 month", "3 month"]
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper() # <-- SUGGESTION: Configurable log level
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 
 # Pyppeteer/Browser Configuration
-VIEWPORT = {'width': 2700, 'height': 1475, 'deviceScaleFactor': 2}
 PYPPETEER_LAUNCH_OPTIONS = {
     'executablePath': os.getenv('CHROME_BIN'), # For platforms like Heroku/Koyeb with buildpacks
     'args': ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     'headless': True
 }
+VIEWPORT = {'width': 2700, 'height': 1475, 'deviceScaleFactor': 2}
+
 
 # --- Initialization ---
 
@@ -62,7 +63,7 @@ if not TOKEN or not CHANNEL_ID:
 # Initialize Telegram bot
 bot = telebot.TeleBot(TOKEN)
 
-# --- Core Logic (No changes from previous version) ---
+# --- Core Logic ---
 
 async def capture_coinglass_heatmap(time_period: str = "24 hour") -> str | None:
     """Captures the Coinglass liquidation heatmap using pyppeteer."""
@@ -172,7 +173,7 @@ def process_and_send_heatmap(chat_id: str | int, time_period: str):
             os.remove(filename)
             logger.info(f"Cleaned up temporary file: {filename}")
 
-# --- Scheduled & Bot Handler Functions (No changes) ---
+# --- Scheduled & Bot Handler Functions ---
 
 def scheduled_heatmap_task():
     """The function that gets called by the scheduler."""
@@ -203,7 +204,7 @@ def handle_manual_heatmap(message):
 # --- Main Application Logic ---
 
 def run_bot_scheduler():
-    """Main function to run the bot and scheduler."""
+    """Main function to run the bot and scheduler loop."""
     logger.info(f"Starting Coinglass Heatmap Bot. Interval: {SCHEDULE_INTERVAL_HOURS} hours. Timeframe: {DEFAULT_TIMEFRAME}.")
     
     schedule.every(SCHEDULE_INTERVAL_HOURS).hours.do(scheduled_heatmap_task)
@@ -223,6 +224,20 @@ def run_bot_scheduler():
 app = Flask(__name__)
 bot_thread = None # Global handle to the bot thread
 
+def start_background_tasks():
+    """
+    Starts the bot and scheduler in a background thread.
+    This function is designed to be called by the Gunicorn post_fork hook.
+    """
+    global bot_thread
+    # Ensure this runs only once per worker
+    if bot_thread is None or not bot_thread.is_alive():
+        logger.info("Starting background tasks for the bot...")
+        bot_thread = threading.Thread(target=run_bot_scheduler, daemon=True)
+        bot_thread.start()
+    else:
+        logger.info("Background tasks are already running.")
+
 @app.route('/', methods=['GET'])
 def root():
     return 'Bot is running.', 200
@@ -235,17 +250,17 @@ def health():
     if bot_thread and bot_thread.is_alive():
         return jsonify(status='ok', threads={'bot_scheduler': 'alive'}), 200
     else:
-        logger.error("Health check failed: bot_scheduler thread is not alive.")
-        # Return 503 Service Unavailable, a standard code for a service being down
-        return jsonify(status='error', threads={'bot_scheduler': 'dead'}), 503
+        # If the thread is not started or has died, return a service unavailable error
+        logger.error("Health check failed: bot_scheduler thread is not alive or not started.")
+        return jsonify(status='error', threads={'bot_scheduler': 'dead or not started'}), 503
 
 if __name__ == '__main__':
-    # Start the bot and scheduler logic in a background thread
-    bot_thread = threading.Thread(target=run_bot_scheduler, daemon=True)
-    bot_thread.start()
+    # This block is for local development only.
+    # It starts the background tasks and the Flask development server.
+    # In production, Gunicorn will be used and will call start_background_tasks via a hook.
+    logger.info("Starting application for local development...")
+    start_background_tasks()
     
-    # Use Flask's development server for local testing
-    # For production, a WSGI server like Gunicorn will be used (see deployment instructions)
     port = int(os.getenv('PORT', '8080'))
-    logger.info(f"Starting Flask dev server on port {port} for local testing.")
+    logger.info(f"Starting Flask dev server on port {port}.")
     app.run(host='0.0.0.0', port=port)
