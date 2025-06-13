@@ -1,9 +1,11 @@
-# requirements.txt
-python-dotenv
-pytelegrambotapi
-schedule
+# --- START OF FILE requirements.txt ---
+telebot
+pyTelegramBotAPI
+selenium
 requests
+python-dotenv
+schedule
+Pillow
 Flask
 gunicorn
-numpy
-matplotlib
+# --- END OF FILE requirements.txt ---
