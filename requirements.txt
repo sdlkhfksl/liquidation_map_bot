@@ -1,10 +1,7 @@
-python-telegram-bot
-selenium
-pillow
-schedule
 python-dotenv
-requests
-telebot
 pytelegrambotapi
-Flask
-
+schedule
+requests
+Pillow
+pyppeteer
+flask
