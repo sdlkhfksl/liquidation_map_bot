@@ -1,48 +1,16 @@
-# .gitignore
-
-# Byte-compiled / optimized / C extensions
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Virtual Environments
-venv/
+.Python
 env/
-.venv/
+venv/
 
-# Environment variables
-# NEVER commit your .env file. It contains secrets!
+# Environment
 .env
 
-# Log files
+# Logs and temp files
 logs/
 *.log
-
-# Temporary screenshot files (if any were saved locally)
-heatmap_*.png
-
-# IDE / Editor specific files
-.idea/
-.vscode/
-*.swp
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+debug_screenshot.png
