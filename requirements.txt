@@ -1,8 +1,12 @@
-python-dotenv
-pytelegrambotapi
-schedule
-requests
-Pillow
-pyppeteer
-flask
-gunicorn
+# requirements.txt
+
+# --- Core Application ---
+python-dotenv         # Loads environment variables from .env file for local development
+pytelegrambotapi      # The Telegram bot library
+schedule              # For scheduling recurring tasks
+requests              # For making HTTP requests to APIs (ScreenshotOne, CoinGecko)
+Pillow                # Image processing library, good to have as a dependency
+
+# --- Web Server for Health Checks ---
+Flask                 # Micro web framework for the /health endpoint
+gunicorn              # Production-grade WSGI server to run the Flask app
