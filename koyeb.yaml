@@ -1,17 +1,10 @@
-# --- START OF koyeb.yaml (The Final, Correct Version) ---
-
-# 这是最终的、完整的配置文件。它包含了之前缺失的启动命令。
-name: heatmap-bot-app
-
 services:
   - name: bot
     type: web
     builder: dockerfile
     docker:
       file: ./Dockerfile
-      # --- 这是之前缺失的、最关键的部分 ---
-      # 强制定义启动命令，覆盖 Dockerfile 里的 CMD，确保100%执行。
-      command: "gunicorn"
+      command: ["gunicorn"]
       args:
         - "--bind"
         - "0.0.0.0:8000"
@@ -22,19 +15,3 @@ services:
         - "bot:app"
         - "--post-fork"
         - "bot:post_fork"
-    # ----------------------------------------
-    ports:
-      - port: 8000
-        protocol: http
-    healthChecks:
-      - path: /health
-        port: 8000
-        protocol: http
-    env:
-      - key: TELEGRAM_BOT_TOKEN
-        from: secret
-      - key: TELEGRAM_CHANNEL_ID
-      - key: SCHEDULE_INTERVAL_HOURS
-      - key: DEFAULT_TIMEFRAME
-
-# --- END OF koyeb.yaml ---
